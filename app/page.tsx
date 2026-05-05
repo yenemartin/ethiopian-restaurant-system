@@ -1,11 +1,11 @@
 "use client";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 type Mode = "pickup" | "dine-in";
 type MenuCategory = "Meat" | "Vegan" | "Combo" | "Sides" | "Drinks";
 
 type MenuItem = {
-  id: number;
+  id: string;
   name: string;
   description: string;
   category: MenuCategory;
@@ -120,7 +120,7 @@ function getSelfTestResults() {
   const totals = calculateOrderAmounts(
     [
       {
-        id: 1,
+        id: "preview-doro-wat",
         name: "A",
         description: "",
         category: "Meat",
@@ -131,7 +131,7 @@ function getSelfTestResults() {
         qty: 2,
       },
       {
-        id: 2,
+        id: "preview-misir-wat",
         name: "B",
         description: "",
         category: "Sides",
@@ -154,7 +154,7 @@ function getSelfTestResults() {
 
 const initialMenu: MenuItem[] = [
   {
-    id: 1,
+    id: "preview-doro-wat",
     name: "Doro Wat",
     description: "Spicy chicken stew with egg and injera.",
     category: "Meat",
@@ -164,7 +164,7 @@ const initialMenu: MenuItem[] = [
     image: "ethiopian-doro-wat",
   },
   {
-    id: 2,
+    id: "preview-misir-wat",
     name: "Misir Wat",
     description: "Berbere lentils, slow-simmered and rich.",
     category: "Vegan",
@@ -174,7 +174,7 @@ const initialMenu: MenuItem[] = [
     image: "ethiopian-misir-wat",
   },
   {
-    id: 3,
+    id: "preview-veggie-combo",
     name: "Veggie Combo",
     description: "Assorted seasonal vegetables and lentils on injera.",
     category: "Combo",
@@ -184,7 +184,7 @@ const initialMenu: MenuItem[] = [
     image: "ethiopian-veggie-combo",
   },
   {
-    id: 4,
+    id: "preview-kitfo",
     name: "Kitfo",
     description: "Minced beef, mitmita butter, ayib on the side.",
     category: "Meat",
@@ -194,7 +194,7 @@ const initialMenu: MenuItem[] = [
     image: "ethiopian-kitfo",
   },
   {
-    id: 5,
+    id: "preview-injera",
     name: "Extra Injera",
     description: "Fresh rolled injera.",
     category: "Sides",
@@ -204,7 +204,7 @@ const initialMenu: MenuItem[] = [
     image: "ethiopian-injera",
   },
   {
-    id: 6,
+    id: "preview-coffee",
     name: "Ethiopian Coffee",
     description: "Traditional dark roast coffee.",
     category: "Drinks",
@@ -533,6 +533,27 @@ export default function HybridEthiopianRestaurantPreview() {
 
   const amounts = useMemo(() => calculateOrderAmounts(cart, Number(taxRate || 0), Number(serviceFee || 0)), [cart, taxRate, serviceFee]);
 
+  useEffect(() => {
+    let ignore = false;
+    async function loadMenu() {
+      const response = await fetch("/api/menu");
+      if (!response.ok) return;
+      const data = await response.json();
+      if (!ignore && Array.isArray(data.menu) && data.menu.length > 0) {
+        setMenu(
+          data.menu.map((item: MenuItem & { _id?: string }) => ({
+            ...item,
+            id: item._id || item.id,
+          }))
+        );
+      }
+    }
+    loadMenu();
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
   function addToCart(item: MenuItem) {
     setCart((prev) => {
       const found = prev.find((cartItem) => cartItem.id === item.id);
@@ -543,7 +564,7 @@ export default function HybridEthiopianRestaurantPreview() {
     });
   }
 
-  function submitOrder() {
+  async function submitOrder() {
     if (cart.length === 0) {
       setMessage("Add at least one item before placing an order.");
       return;
@@ -554,7 +575,34 @@ export default function HybridEthiopianRestaurantPreview() {
       return;
     }
 
-    setMessage(mode === "pickup" ? "Preview: redirecting to Stripe for pickup payment." : "Preview: dine-in order sent to kitchen, pay later.");
+    setMessage(mode === "pickup" ? "Creating prepaid Stripe Checkout session…" : "Creating dine-in pay-later Stripe Checkout session…");
+
+    const dbBackedItems = cart.filter((item) => !item.id.startsWith("preview-") && !item.id.startsWith("test-"));
+    if (dbBackedItems.length !== cart.length) {
+      setMessage("Seed MongoDB first, then refresh so checkout uses database menu item IDs.");
+      return;
+    }
+
+    const response = await fetch("/api/checkout", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        orderType: mode,
+        paymentMode: mode === "pickup" ? "prepaid" : "pay-later",
+        customerName: mode === "pickup" ? "Pickup Guest" : "Table Guest",
+        customerEmail: "guest@example.com",
+        pickupTime: mode === "pickup" ? "ASAP" : undefined,
+        tableNumber: mode === "dine-in" ? 12 : undefined,
+        items: cart.map((item) => ({ menuItemId: item.id, quantity: item.qty })),
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      setMessage(data.error || "Unable to create checkout session.");
+      return;
+    }
+    if (data.checkoutUrl) window.location.href = data.checkoutUrl;
+    else setMessage(`Order ${data.orderId} created.`);
   }
 
   const tabs = [
